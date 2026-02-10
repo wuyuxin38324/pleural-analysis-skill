@@ -213,7 +213,7 @@ if __name__ == "__main__":
     import json
 
     parser = argparse.ArgumentParser(description="Predict pleural invasion risk for lung nodules")
-    parser.add_argument("--features", help="Feature file path (.pkl format)")
+    parser.add_argument("--features", help="Feature file path (.json or .pkl format)")
     parser.add_argument("--json", help="Feature JSON string")
     parser.add_argument("--major", type=float, help="Major axis (mm)")
     parser.add_argument("--minor", type=float, help="Minor axis (mm)")
@@ -229,8 +229,12 @@ if __name__ == "__main__":
     features = None
 
     if args.features:
-        # Load from file
-        features = joblib.load(args.features)
+        # Load from file - auto-detect format
+        if args.features.endswith('.json'):
+            with open(args.features, 'r') as f:
+                features = json.load(f)
+        else:
+            features = joblib.load(args.features)
     elif args.json:
         # Parse from JSON
         features = json.loads(args.json)
