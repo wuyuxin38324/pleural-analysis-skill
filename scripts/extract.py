@@ -331,6 +331,27 @@ if __name__ == "__main__":
     print_features_table(features)
 
     if args.output:
-        import joblib
-        joblib.dump(features, args.output)
+        import json
+        # Convert numpy types to native Python types for JSON serialization
+        def convert_to_native(obj):
+            if isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_native(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [convert_to_native(item) for item in obj]
+            else:
+                return obj
+
+        # Determine output format based on extension
+        if args.output.endswith('.json'):
+            with open(args.output, 'w') as f:
+                json.dump(convert_to_native(features), f, indent=2)
+        else:
+            import joblib
+            joblib.dump(features, args.output)
         print(f"Features saved to: {args.output}")
