@@ -12,10 +12,10 @@ license: Proprietary
 |------|------|---------|-------|
 | 1 | List files | `ls -la` | See what data exists |
 | 2 | Preprocess DICOM | `python scripts/preprocess.py <dicom_dir> -o <output>` | If DICOM folders exist |
-| 3 | Segment lung | `python scripts/segment.py --ct <ct> --lung` | If no lung mask |
+| 3 | Segment lung | `python scripts/segment.py --ct CT.nii.gz --lung` | ALWAYS needed for pleura_distance/lateral |
 | 4 | Segment tumor | `python scripts/segment.py --ct <ct> --tumor --pet <pet> --model <model>` | If no tumor mask |
-| 5 | Extract features | `python scripts/extract.py --ct <ct> --tumor <tumor> --suv <suv> -o features.json` | Always run |
-| 6 | Predict risk | `python scripts/predict.py --features features.json` | Final step |
+| 5 | Extract features | `python scripts/extract.py --ct CT.nii.gz --tumor CT_M.nii.gz --tumor-suv PET_M_R.nii.gz --suv SUV.nii.gz --lung lung_mask.nii.gz` | Always run |
+| 6 | Predict risk | `python scripts/analyze.py --ct CT.nii.gz --tumor CT_M.nii.gz --tumor-suv PET_M_R.nii.gz --suv SUV.nii.gz --lung lung_mask.nii.gz` | Final step |
 
 ## Workflow
 
@@ -31,12 +31,12 @@ ls -la
 - **PIdata format** (already preprocessed):
   - `CT.nii.gz` - High-resolution CT image
   - `CT_low.nii.gz` - Low-dose CT image
-  - `CT_M.nii.gz` - Tumor mask delineated on high-resolution CT (USE THIS - size matches CT)
+  - `CT_M.nii.gz` - Tumor mask delineated on high-resolution CT (use for CT features)
   - `PET.nii.gz` - PET image (BQML)
   - `PET_M.nii.gz` - Tumor mask delineated on low-dose CT
-  - `PET_M_R.nii.gz` - Tumor mask delineated on PET, resized from PET_M
+  - `PET_M_R.nii.gz` - Tumor mask delineated on PET, resized from PET_M (use for SUV features)
   - `SUV.nii.gz` - PET SUV values
-  - Use `CT.nii.gz` as CT image, `CT_M.nii.gz` as tumor mask (size-matched)
+  - Use `CT_M.nii.gz` for CT features, `PET_M_R.nii.gz` for SUV features (each mask aligns with its corresponding image)
 
 - **DICOM format** (raw):
   - `CT/` folder with DICOM files
@@ -51,44 +51,57 @@ Outputs: `CT.nii.gz`, `PET.nii.gz`, `SUV.nii.gz`
 
 **4. Segmentation** (if masks don't exist):
 
-Lung segmentation:
+**IMPORTANT**: PIdata typically does NOT include lung mask. You MUST run lung segmentation first.
+
+Lung segmentation (REQUIRED for pleura_distance and lateral):
 ```bash
 python scripts/segment.py --ct CT.nii.gz --lung
 ```
 Outputs: `lung_mask.nii.gz`
 
-Tumor segmentation:
+Tumor segmentation (if needed):
 ```bash
 python scripts/segment.py --ct CT.nii.gz --tumor --pet PET.nii.gz --model <model_path>
 ```
 Outputs: `tumor_mask.nii.gz`
 
 **5. Extract features** (always required):
+
 ```bash
-python scripts/extract.py --ct CT.nii.gz --tumor CT_M.nii.gz --suv SUV.nii.gz -o features.json
+python scripts/extract.py --ct CT.nii.gz --tumor CT_M.nii.gz --tumor-suv PET_M_R.nii.gz --suv SUV.nii.gz --lung lung_mask.nii.gz -o features.json
 ```
+
+- `--tumor` = CT_M.nii.gz (for CT features: major_axis, minor_axis, ctr, pleura_distance, lateral)
+- `--tumor-suv` = PET_M_R.nii.gz (for SUV features: suvmax)
+- `--lung` = lung_mask.nii.gz (REQUIRED for pleura_distance and lateral)
+
+**If pleura_distance or lateral show NaN**: Lung segmentation failed or mask not provided → Re-run step 4
+
 Outputs: `features.json` with 6 radiomics features
 
 **6. Predict risk** (final step):
+
 ```bash
 python scripts/predict.py --features features.json
 ```
+
 Or use combined script:
+
 ```bash
-python scripts/analyze.py --ct CT.nii.gz --tumor CT_M.nii.gz --suv SUV.nii.gz
+python scripts/analyze.py --ct CT.nii.gz --tumor CT_M.nii.gz --tumor-suv PET_M_R.nii.gz --suv SUV.nii.gz --lung lung_mask.nii.gz
 ```
 
 ## PIdata File Structure
 
 | File | Description |
 |------|-------------|
-| `CT.nii.gz` | Chest high-resolution CT (use for analysis) |
+| `CT.nii.gz` | Chest high-resolution CT (use for CT features) |
 | `CT_low.nii.gz` | Low-dose CT |
-| `CT_M.nii.gz` | Tumor mask delineated on high-resolution CT (USE THIS - size matches CT) |
+| `CT_M.nii.gz` | Tumor mask delineated on high-resolution CT (use for CT features) |
 | `PET.nii.gz` | PET, BQML |
-| `PET_M.nii.gz` | Tumor mask delineated through PET on low-dose CT |
-| `PET_M_R.nii.gz` | Tumor mask delineated on PET, resized from PET_M |
-| `SUV.nii.gz` | PET, SUV values (use for analysis) |
+| `PET_M.nii.gz` | Tumor mask delineated on low-dose CT |
+| `PET_M_R.nii.gz` | Tumor mask delineated on PET, resized from PET_M (use for SUV features) |
+| `SUV.nii.gz` | PET, SUV values (use for suvmax) |
 
 ## The 6 Radiomics Features
 
@@ -132,8 +145,11 @@ Risk levels:
 ## Important Notes
 
 - **Never create new scripts** - always use existing scripts in `scripts/`
-- **Correct inputs**: Use `CT.nii.gz` as CT image, `CT_M.nii.gz` as tumor mask (size-matched)
-- **Why CT_M**: CT_M.nii.gz is delineated on CT.nii.gz, ensuring perfect spatial alignment for accurate pleura_distance and lateral calculations
+- **Size alignment**: CT and SUV images often have different resolutions
+- **Use two tumor masks**:
+  - `CT_M.nii.gz` for CT features (major_axis, minor_axis, ctr, pleura_distance, lateral)
+  - `PET_M_R.nii.gz` for SUV features (suvmax)
+- **This ensures**: Each mask is spatially aligned with its corresponding image for accurate calculations
 - **Dependencies**:
   - TotalSegmentator: `pip install totalsegmentator` (for lung segmentation)
   - nnUNet weights required for tumor segmentation

@@ -20,11 +20,20 @@ from typing import Dict, Tuple, Optional
 
 
 def load_masks(ct_path: str, tumor_mask_path: str, lung_mask_path: str,
-               suv_path: Optional[str] = None) -> Dict:
-    """加载所有掩码和图像"""
+               suv_path: Optional[str] = None, tumor_mask_suv_path: Optional[str] = None) -> Dict:
+    """加载所有掩码和图像
+
+    Args:
+        ct_path: CT图像路径
+        tumor_mask_path: 肿瘤掩码路径(用于CT特征，应与CT尺寸匹配)
+        lung_mask_path: 肺掩码路径
+        suv_path: SUV图像路径
+        tumor_mask_suv_path: 肿瘤掩码路径(用于SUV特征，应与SUV尺寸匹配)
+    """
     result = {
         "ct": sitk.ReadImage(ct_path),
         "tumor_mask": sitk.ReadImage(tumor_mask_path),
+        "tumor_mask_suv": None,  # 用于SUV特征提取的掩码
         "lung_mask": None,
         "suv": None
     }
@@ -34,6 +43,9 @@ def load_masks(ct_path: str, tumor_mask_path: str, lung_mask_path: str,
 
     if suv_path and os.path.exists(suv_path):
         result["suv"] = sitk.ReadImage(suv_path)
+
+    if tumor_mask_suv_path and os.path.exists(tumor_mask_suv_path):
+        result["tumor_mask_suv"] = sitk.ReadImage(tumor_mask_suv_path)
 
     return result
 
@@ -178,20 +190,22 @@ def resample_to_reference(image: sitk.Image, reference: sitk.Image) -> np.ndarra
 
 def extract_features(ct_path: str, tumor_mask_path: str, lung_mask_path: str,
                      suv_path: Optional[str] = None,
-                     dcm_dir: Optional[str] = None) -> Dict[str, float]:
+                     dcm_dir: Optional[str] = None,
+                     tumor_mask_suv_path: Optional[str] = None) -> Dict[str, float]:
     """
     提取所有特征
     Args:
         ct_path: CT图像路径
-        tumor_mask_path: 肿瘤掩码路径
+        tumor_mask_path: 肿瘤掩码路径(用于CT特征，应与CT尺寸匹配)
         lung_mask_path: 肺掩码路径
         suv_path: SUV图像路径
         dcm_dir: DICOM目录(用于获取spacing信息)
+        tumor_mask_suv_path: 肿瘤掩码路径(用于SUV特征，应与SUV尺寸匹配)
     Returns:
         特征字典
     """
     # 加载数据
-    data = load_masks(ct_path, tumor_mask_path, lung_mask_path, suv_path)
+    data = load_masks(ct_path, tumor_mask_path, lung_mask_path, suv_path, tumor_mask_suv_path)
 
     tumor_array = sitk.GetArrayFromImage(data["tumor_mask"])
     tumor_shape = tumor_array.shape
@@ -223,32 +237,19 @@ def extract_features(ct_path: str, tumor_mask_path: str, lung_mask_path: str,
         except:
             features["ctr"] = np.nan
 
-        # 4. 胸膜距离和6. 左右 - 使用简化的位置判断
+        # 4. 胸膜距离和6. 左右 - 需要肺掩码
         if data["lung_mask"] is not None:
             try:
                 lung_array = sitk.GetArrayFromImage(data["lung_mask"])
 
-                # 如果尺寸不匹配，使用简化方法
+                # 检查尺寸是否匹配
                 if lung_array.shape != tumor_array.shape:
-                    # 基于肿瘤重心在图像中的位置判断左右
-                    lung_mask_binary = lung_array > 0
-                    lung_center_y = np.mean(np.argwhere(lung_mask_binary)[:, 1])
-                    tumor_center = np.mean(np.argwhere(tumor_slice > 0), axis=0)
-
-                    # 判断左右 (基于图像中心)
-                    image_center = tumor_slice.shape[1] / 2
-                    features["lateral"] = 0 if tumor_center[0] < image_center else 1
-
-                    # 胸膜距离 - 估算：使用肿瘤到图像边界的距离
-                    # 这只是粗略估计，真正的计算需要配准的图像
-                    if tumor_center[0] < image_center:
-                        # 左侧肿瘤，到左边界的距离
-                        dist_to_edge = tumor_center[0] * spacing
-                    else:
-                        # 右侧肿瘤，到右边界的距离
-                        dist_to_edge = (tumor_slice.shape[1] - tumor_center[0]) * spacing
-
-                    features["pleura_distance"] = dist_to_edge
+                    print("WARNING: Lung mask size does not match tumor mask size")
+                    print(f"  Tumor mask shape: {tumor_array.shape}")
+                    print(f"  Lung mask shape: {lung_array.shape}")
+                    print("  Pleura distance and lateral will be NaN. Please ensure masks are from the same image.")
+                    features["pleura_distance"] = np.nan
+                    features["lateral"] = np.nan
                 else:
                     # 尺寸匹配，正常计算
                     lung_slice = lung_array[max_idx]
@@ -257,9 +258,12 @@ def extract_features(ct_path: str, tumor_mask_path: str, lung_mask_path: str,
                     )
                     features["lateral"] = determine_lateral(tumor_slice, lung_slice)
             except Exception as e:
+                print(f"ERROR calculating pleura features: {e}")
                 features["pleura_distance"] = np.nan
                 features["lateral"] = np.nan
         else:
+            print("WARNING: No lung mask provided. Pleura distance and lateral will be NaN.")
+            print("  Run: python scripts/segment.py --ct <ct_path> --lung")
             features["pleura_distance"] = np.nan
             features["lateral"] = np.nan
     else:
@@ -271,7 +275,9 @@ def extract_features(ct_path: str, tumor_mask_path: str, lung_mask_path: str,
 
     # 3. SUVmax
     if data["suv"] is not None:
-        features["suvmax"] = calculate_suvmax(data["suv"], data["tumor_mask"])
+        # 优先使用 tumor_mask_suv（与 SUV 尺寸匹配的掩码）
+        tumor_mask_for_suv = data["tumor_mask_suv"] if data["tumor_mask_suv"] is not None else data["tumor_mask"]
+        features["suvmax"] = calculate_suvmax(data["suv"], tumor_mask_for_suv)
     else:
         features["suvmax"] = np.nan
 
@@ -279,31 +285,31 @@ def extract_features(ct_path: str, tumor_mask_path: str, lung_mask_path: str,
 
 
 def print_features_table(features: Dict[str, float]):
-    """打印特征表格"""
+    """Print feature extraction results"""
     print("\n" + "=" * 40)
-    print("特征提取结果")
+    print("Feature Extraction Results")
     print("=" * 40)
-    print(f"{'特征':<20} {'值':<15}")
+    print(f"{'Feature':<25} {'Value':<15}")
     print("-" * 40)
 
     feature_names = {
-        "major_axis": "长轴 (mm)",
-        "minor_axis": "短轴 (mm)",
+        "major_axis": "Major Axis (mm)",
+        "minor_axis": "Minor Axis (mm)",
         "suvmax": "SUVmax",
-        "pleura_distance": "胸膜距离 (mm)",
+        "pleura_distance": "Pleura Distance (mm)",
         "ctr": "CTR",
-        "lateral": "左右 (0:左 1:右)"
+        "lateral": "Lateral (0:Left 1:Right)"
     }
 
     for key, name in feature_names.items():
         value = features.get(key, np.nan)
         if np.isnan(value):
-            print(f"{name:<20} {'NaN':<15}")
+            print(f"{name:<25} {'NaN':<15}")
         elif key == "lateral":
-            lateral_str = "左肺" if value == 0 else ("右肺" if value == 1 else "NaN")
-            print(f"{name:<20} {lateral_str:<15}")
+            lateral_str = "Left" if value == 0 else ("Right" if value == 1 else "NaN")
+            print(f"{name:<25} {lateral_str:<15}")
         else:
-            print(f"{name:<20} {value:<15.2f}")
+            print(f"{name:<25} {value:<15.2f}")
     print("=" * 40 + "\n")
 
 
@@ -311,19 +317,20 @@ if __name__ == "__main__":
     import sys
     import argparse
 
-    parser = argparse.ArgumentParser(description="提取肺结节胸膜侵犯风险特征")
-    parser.add_argument("--ct", required=True, help="CT图像路径")
-    parser.add_argument("--tumor", required=True, help="肿瘤掩码路径")
-    parser.add_argument("--lung", default=None, help="肺掩码路径(可选)")
-    parser.add_argument("--suv", default=None, help="SUV图像路径(可选)")
-    parser.add_argument("-o", "--output", default=None, help="特征保存路径(.pkl格式，可选)")
+    parser = argparse.ArgumentParser(description="Extract pleural invasion risk features from lung nodules")
+    parser.add_argument("--ct", required=True, help="CT image path")
+    parser.add_argument("--tumor", required=True, help="Tumor mask path (for CT features, should match CT size)")
+    parser.add_argument("--tumor-suv", default=None, help="Tumor mask path (for SUV features, should match SUV size)")
+    parser.add_argument("--lung", default=None, help="Lung mask path (optional)")
+    parser.add_argument("--suv", default=None, help="SUV image path (optional)")
+    parser.add_argument("-o", "--output", default=None, help="Output path for features (.pkl format, optional)")
 
     args = parser.parse_args()
 
-    features = extract_features(args.ct, args.tumor, args.lung, args.suv)
+    features = extract_features(args.ct, args.tumor, args.lung, args.suv, tumor_mask_suv_path=args.tumor_suv)
     print_features_table(features)
 
     if args.output:
         import joblib
         joblib.dump(features, args.output)
-        print(f"特征已保存到: {args.output}")
+        print(f"Features saved to: {args.output}")
