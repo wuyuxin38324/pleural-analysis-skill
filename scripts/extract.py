@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-特征提取模块 - 提取6个影像组学特征
-1. 长轴 - 肿瘤最大直径
-2. 短轴 - 肿瘤最小直径
-3. SUVmax - PET最大标准化摄取值
-4. 胸膜距离 - 肿瘤到胸膜的最短距离
-5. CTR - 实性肿瘤比例
-6. 左右 - 肿瘤位置(0:左肺, 1:右肺)
+Feature extraction module - Extract 6 radiomics features
+1. major_axis - Maximum tumor diameter
+2. minor_axis - Minimum tumor diameter
+3. suvmax - PET maximum standardized uptake value
+4. pleura_distance - Shortest distance from tumor to pleura
+5. ctr - Consolidation-to-tumor ratio
+6. lateral - Tumor location (0: left lung, 1: right lung)
 """
 
 import os
