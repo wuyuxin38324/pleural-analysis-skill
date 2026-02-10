@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-分割模块 - 肺结节和肺分割
-支持nnUNet模型推理
+Segmentation module - Lung nodule and lung segmentation
+Supports nnUNet model inference
 """
 
 import os
@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 
 
 class SegmentationModel:
-    """分割模型基类"""
+    """Segmentation model base class"""
 
     def __init__(self, model_path: Optional[str] = None, device: str = "cuda"):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -20,23 +20,23 @@ class SegmentationModel:
         self.model_path = model_path
 
     def load_model(self):
-        """加载模型权重"""
-        raise NotImplementedError("子类需要实现load_model方法")
+        """Load model weights"""
+        raise NotImplementedError("Subclass must implement load_model method")
 
     def predict(self, image_path: str, output_path: str) -> str:
         """
-        执行分割预测
+        Execute segmentation prediction
         Args:
-            image_path: 输入图像路径
-            output_path: 输出掩码路径
+            image_path: Input image path
+            output_path: Output mask path
         Returns:
-            掩码文件路径
+            Mask file path
         """
-        raise NotImplementedError("子类需要实现predict方法")
+        raise NotImplementedError("Subclass must implement predict method")
 
 
 class NnunetSegmentation(SegmentationModel):
-    """nnUNet分割模型"""
+    """nnUNet segmentation model"""
 
     def __init__(self, model_path: Optional[str] = None, device: str = "cuda"):
         super().__init__(model_path, device)
@@ -48,12 +48,12 @@ class NnunetSegmentation(SegmentationModel):
         }
 
     def load_model(self):
-        """加载nnUNet模型"""
+        """Load nnUNet model"""
         if self.model_path is None:
-            raise ValueError("请指定model_path")
+            raise ValueError("Please specify model_path")
 
         try:
-            # 尝试加载MONAI nnUNet
+            # Try to load MONAI nnUNet
             from monai.networks.nets import UNet
             self.model = UNet(
                 spatial_dims=3,
@@ -66,21 +66,21 @@ class NnunetSegmentation(SegmentationModel):
             checkpoint = torch.load(self.model_path, map_location=self.device)
             self.model.load_state_dict(checkpoint)
             self.model.eval()
-            print(f"模型加载成功: {self.model_path}")
+            print(f"Model loaded successfully: {self.model_path}")
         except Exception as e:
-            print(f"模型加载失败: {e}")
-            print("提示: 需要提供预训练权重文件")
+            print(f"Model loading failed: {e}")
+            print("Hint: You need to provide pretrained weight file")
             raise
 
     def preprocess(self, image_path: str, target_shape: tuple = (256, 256, 256)):
-        """预处理图像"""
+        """Preprocess image"""
         image = sitk.ReadImage(image_path)
         array = sitk.GetArrayFromImage(image).astype(np.float32)
 
-        # 归一化
+        # Normalize
         array = (array - array.min()) / (array.max() - array.min() + 1e-8)
 
-        # Padding/crop到目标大小
+        # Padding/crop to target size
         pads = []
         for i in range(3):
             diff = target_shape[i] - array.shape[i]
@@ -95,7 +95,7 @@ class NnunetSegmentation(SegmentationModel):
                 pad_width[i] = (0, diff)
                 array = np.pad(array, pad_width, mode='constant', constant_values=0)
 
-        # Crop如果过大
+        # Crop if too large
         slices = []
         for i in range(3):
             if array.shape[i] > target_shape[i]:
@@ -105,13 +105,13 @@ class NnunetSegmentation(SegmentationModel):
             else:
                 slices.append(slice(None))
 
-        array = array[tuples(slices)]
+        array = array[tuple(slices)]
 
         tensor = torch.from_numpy(array).unsqueeze(0).unsqueeze(0).to(self.device)
         return tensor, image
 
     def predict(self, image_path: str, output_path: str) -> str:
-        """执行分割预测"""
+        """Execute segmentation prediction"""
         if self.model is None:
             self.load_model()
 
@@ -121,7 +121,7 @@ class NnunetSegmentation(SegmentationModel):
             output = self.model(tensor)
             pred = torch.argmax(output, dim=1).squeeze().cpu().numpy()
 
-        # 保存结果
+        # Save result
         result_image = sitk.GetImageFromArray(pred.astype(np.uint8))
         result_image.CopyInformation(ref_image)
         sitk.WriteImage(result_image, output_path)
@@ -130,13 +130,13 @@ class NnunetSegmentation(SegmentationModel):
 
 
 class TotalsegSegmentation(SegmentationModel):
-    """TotalSegmentator肺分割模型"""
+    """TotalSegmentator lung segmentation model"""
 
     def __init__(self, device: str = "cuda"):
         super().__init__(None, device)
 
     def predict(self, image_path: str, output_path: str) -> str:
-        """使用TotalSegmentator进行肺分割"""
+        """Use TotalSegmentator for lung segmentation"""
         try:
             import subprocess
             output_dir = os.path.dirname(output_path)
@@ -147,15 +147,15 @@ class TotalsegSegmentation(SegmentationModel):
             ]
             subprocess.run(cmd, check=True)
 
-            # 合并左右肺
+            # Merge left and right lungs
             self._merge_lungs(output_dir, output_path)
             return output_path
         except Exception as e:
-            print(f"TotalSegmentator调用失败: {e}")
+            print(f"TotalSegmentator call failed: {e}")
             raise
 
     def _merge_lungs(self, input_dir: str, output_path: str):
-        """合并左右肺叶"""
+        """Merge left and right lung lobes"""
         lung_files = [
             "lung_lower_lobe_left.nii.gz",
             "lung_upper_lobe_left.nii.gz",
@@ -183,14 +183,14 @@ class TotalsegSegmentation(SegmentationModel):
 def segment_tumor(ct_path: str, pet_path: str, model_path: Optional[str] = None,
                   output_dir: str = ".") -> Dict[str, str]:
     """
-    肺结节分割
+    Lung nodule segmentation
     Args:
-        ct_path: CT图像路径
-        pet_path: PET图像路径
-        model_path: 模型权重路径
-        output_dir: 输出目录
+        ct_path: CT image path
+        pet_path: PET image path
+        model_path: Model weight path
+        output_dir: Output directory
     Returns:
-        包含输出路径的字典
+        Dictionary containing output paths
     """
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "tumor_mask.nii.gz")
@@ -203,12 +203,12 @@ def segment_tumor(ct_path: str, pet_path: str, model_path: Optional[str] = None,
 
 def segment_lung(ct_path: str, output_dir: str = ".") -> str:
     """
-    肺分割
+    Lung segmentation
     Args:
-        ct_path: CT图像路径
-        output_dir: 输出目录
+        ct_path: CT image path
+        output_dir: Output directory
     Returns:
-        肺掩码路径
+        Lung mask path
     """
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "lung_mask.nii.gz")
@@ -222,31 +222,31 @@ def segment_lung(ct_path: str, output_dir: str = ".") -> str:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="肺结节和肺分割")
-    parser.add_argument("--ct", required=True, help="CT图像路径")
-    parser.add_argument("--pet", help="PET图像路径(用于肿瘤分割)")
-    parser.add_argument("--lung", action="store_true", help="执行肺分割")
-    parser.add_argument("--tumor", action="store_true", help="执行肿瘤分割")
-    parser.add_argument("--model", help="nnUNet模型权重路径(肿瘤分割需要)")
-    parser.add_argument("-o", "--output", default="output", help="输出目录(默认: output)")
+    parser = argparse.ArgumentParser(description="Lung nodule and lung segmentation")
+    parser.add_argument("--ct", required=True, help="CT image path")
+    parser.add_argument("--pet", help="PET image path (for tumor segmentation)")
+    parser.add_argument("--lung", action="store_true", help="Perform lung segmentation")
+    parser.add_argument("--tumor", action="store_true", help="Perform tumor segmentation")
+    parser.add_argument("--model", help="nnUNet model weight path (required for tumor segmentation)")
+    parser.add_argument("-o", "--output", default="output", help="Output directory (default: output)")
 
     args = parser.parse_args()
 
     if not args.lung and not args.tumor:
         parser.print_help()
-        print("\n错误: 请指定至少一个分割任务 (--lung 或 --tumor)")
+        print("\nError: Please specify at least one segmentation task (--lung or --tumor)")
         exit(1)
 
-    # 肺分割
+    # Lung segmentation
     if args.lung:
         lung_mask = segment_lung(args.ct, args.output)
-        print(f"肺掩码已保存: {lung_mask}")
+        print(f"Lung mask saved: {lung_mask}")
 
-    # 肿瘤分割
+    # Tumor segmentation
     if args.tumor:
         if not args.pet:
-            parser.error("--tumor 需要 --pet 参数")
+            parser.error("--tumor requires --pet parameter")
         if not args.model:
-            parser.error("--tumor 需要 --model 参数")
+            parser.error("--tumor requires --model parameter")
         tumor_result = segment_tumor(args.ct, args.pet, args.model, args.output)
-        print(f"肿瘤掩码已保存: {tumor_result['tumor_mask']}")
+        print(f"Tumor mask saved: {tumor_result['tumor_mask']}")
